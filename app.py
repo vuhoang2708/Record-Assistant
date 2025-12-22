@@ -7,12 +7,7 @@ import time
 
 # --- CẤU HÌNH TRANG ---
 st.set_page_config(page_title="AI Meeting Assistant", page_icon="🎙️", layout="wide")
-
-st.markdown("""
-<style>
-    .stButton>button {width: 100%; border-radius: 8px; height: 3em; font-weight: bold;}
-</style>
-""", unsafe_allow_html=True)
+st.markdown("""<style>.stButton>button {width: 100%; border-radius: 8px; height: 3em; font-weight: bold;}</style>""", unsafe_allow_html=True)
 
 # --- HÀM XỬ LÝ ---
 def configure_genai():
@@ -21,7 +16,7 @@ def configure_genai():
         genai.configure(api_key=api_key)
         return True
     except KeyError:
-        st.error("🚨 Thiếu API Key trong Secrets!")
+        st.error("🚨 Lỗi: Chưa nhập API Key trong Secrets!")
         return False
 
 def upload_to_gemini(path, mime_type="audio/mp3"):
@@ -43,16 +38,16 @@ def create_docx(content):
 
 # --- MAIN APP ---
 def main():
-    st.title("🎙️ AI Meeting Assistant (Auto-Switch)")
+    st.title("🎙️ AI Meeting Assistant (Final Fix)")
     
     if not configure_genai(): return
 
     with st.sidebar:
         st.header("⚙️ Cấu hình")
-        # DANH SÁCH MODEL (Bao gồm cả tương lai)
-        model_version = st.selectbox(
-            "Chọn Model:",
-            ("gemini-1.5-flash", "gemini-2.0-flash-exp", "gemini-3.0-flash")
+        # Người dùng chọn model mong muốn
+        user_choice = st.selectbox(
+            "Chọn Model ưu tiên:",
+            ("gemini-1.5-flash-latest", "gemini-2.0-flash-exp", "gemini-1.5-pro-latest")
         )
         
         st.divider()
@@ -67,7 +62,7 @@ def main():
     uploaded_file = st.file_uploader("Upload file ghi âm", type=['mp3', 'wav', 'm4a'])
 
     if uploaded_file and st.button("🚀 XỬ LÝ NGAY"):
-        with st.spinner("Đang xử lý... (Vui lòng đợi)"):
+        with st.spinner("Đang xử lý..."):
             try:
                 # 1. Lưu file tạm
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
@@ -78,43 +73,65 @@ def main():
                 gemini_file = upload_to_gemini(tmp_path)
 
                 # 3. Tạo Prompt
-                prompt = "Bạn là thư ký chuyên nghiệp. Hãy xử lý file âm thanh này theo yêu cầu:\n"
-                if opt_transcript: prompt += "- Gỡ băng chi tiết từng lời.\n"
-                if opt_summary: prompt += "- Tóm tắt ý chính và lập bảng Action Items.\n"
-                if opt_minutes: prompt += "- Viết biên bản cuộc họp trang trọng.\n"
-                if opt_prosody: prompt += "- Phân tích thái độ, ngữ điệu người nói.\n"
-                if opt_gossip: prompt += "- Kể lại theo phong cách hài hước (Gossip).\n"
-                if opt_slide: prompt += "- Trích xuất nội dung để làm Slide (JSON).\n"
+                prompt = "Bạn là thư ký chuyên nghiệp. Hãy xử lý file âm thanh này:\n"
+                if opt_transcript: prompt += "- Gỡ băng chi tiết.\n"
+                if opt_summary: prompt += "- Tóm tắt ý chính & Action Items.\n"
+                if opt_minutes: prompt += "- Viết biên bản trang trọng.\n"
+                if opt_prosody: prompt += "- Phân tích thái độ/ngữ điệu.\n"
+                if opt_gossip: prompt += "- Kể lại hài hước (Gossip).\n"
+                if opt_slide: prompt += "- Trích xuất JSON làm Slide.\n"
 
-                # 4. GỌI AI VỚI CƠ CHẾ SMART FALLBACK (QUAN TRỌNG)
-                try:
-                    # Thử dùng model người dùng chọn (Ví dụ 3.0)
-                    model = genai.GenerativeModel(model_name=model_version)
-                    response = model.generate_content([prompt, gemini_file])
-                except Exception as e:
-                    # Nếu lỗi (do 3.0 chưa ra mắt), tự động chuyển về 1.5
-                    st.warning(f"⚠️ Model {model_version} chưa sẵn sàng hoặc gặp lỗi. Hệ thống tự động chuyển sang 'gemini-1.5-flash' để xử lý ngay.")
-                    backup_model = genai.GenerativeModel(model_name="gemini-1.5-flash")
-                    response = backup_model.generate_content([prompt, gemini_file])
+                # 4. CƠ CHẾ THỬ SAI LIÊN HOÀN (FIX LỖI 404)
+                # Danh sách các model sẽ thử lần lượt nếu cái trước bị lỗi
+                backup_models = [
+                    user_choice,              # Thử cái người dùng chọn trước
+                    "gemini-1.5-flash",       # Thử bản flash thường
+                    "gemini-1.5-flash-001",   # Thử bản flash v001 (ổn định nhất)
+                    "gemini-1.5-flash-latest",# Thử bản flash mới nhất
+                    "gemini-1.5-pro"          # Cuối cùng thử bản Pro
+                ]
+                
+                # Lọc trùng lặp
+                backup_models = list(dict.fromkeys(backup_models))
+                
+                response = None
+                last_error = None
+                success_model = ""
 
-                # 5. Hiển thị kết quả
-                st.success("✅ Xử lý thành công!")
-                st.markdown(response.text)
+                for model_name in backup_models:
+                    try:
+                        # Thử gọi model
+                        model = genai.GenerativeModel(model_name)
+                        response = model.generate_content([prompt, gemini_file])
+                        success_model = model_name
+                        break # Nếu thành công thì thoát vòng lặp ngay
+                    except Exception as e:
+                        last_error = e
+                        continue # Nếu lỗi thì thử cái tiếp theo trong danh sách
 
-                # 6. Tải về
-                doc = create_docx(response.text)
-                doc_io = tempfile.NamedTemporaryFile(delete=False, suffix=".docx")
-                doc.save(doc_io.name)
-                with open(doc_io.name, "rb") as f:
-                    st.download_button("📥 Tải báo cáo Word", f, "Meeting_Report.docx")
+                # 5. Kiểm tra kết quả cuối cùng
+                if response:
+                    st.success(f"✅ Xử lý thành công! (Đã dùng model: {success_model})")
+                    st.markdown(response.text)
+                    
+                    # Tải về
+                    doc = create_docx(response.text)
+                    doc_io = tempfile.NamedTemporaryFile(delete=False, suffix=".docx")
+                    doc.save(doc_io.name)
+                    with open(doc_io.name, "rb") as f:
+                        st.download_button("📥 Tải báo cáo Word", f, "Meeting_Report.docx")
+                    os.remove(doc_io.name)
+                else:
+                    st.error(f"❌ Tất cả các model đều thất bại. Lỗi cuối cùng: {last_error}")
 
                 # Dọn dẹp
-                genai.delete_file(gemini_file.name)
-                os.remove(tmp_path)
-                os.remove(doc_io.name)
+                try:
+                    genai.delete_file(gemini_file.name)
+                    os.remove(tmp_path)
+                except: pass
 
             except Exception as e:
-                st.error(f"Lỗi không mong muốn: {e}")
+                st.error(f"Lỗi hệ thống: {e}")
 
 if __name__ == "__main__":
     main()
